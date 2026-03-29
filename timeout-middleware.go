@@ -37,12 +37,6 @@ func (tw *timeoutResponseWriter) Write(b []byte) (int, error) {
 	return tw.ResponseWriter.Write(b)
 }
 
-func (tw *timeoutResponseWriter) markTimedOut() {
-	tw.mu.Lock()
-	defer tw.mu.Unlock()
-	tw.timedOut = true
-}
-
 func timeoutMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -71,25 +65,23 @@ func timeoutMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			// Request completed successfully
 			return
 		case <-ctx.Done():
-			// Timeout reached
-			tw.markTimedOut()
-			if ctx.Err() == context.DeadlineExceeded {
-				// Only write retry page if handler hasn't written anything yet
-				tw.mu.Lock()
-				hasWritten := tw.wroteHeader
+			tw.mu.Lock()
+			tw.timedOut = true
+			if ctx.Err() == context.DeadlineExceeded && !tw.wroteHeader {
+				tw.wroteHeader = true
 				tw.mu.Unlock()
 
-				if !hasWritten {
-					w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-					w.Header().Set("Pragma", "no-cache")
-					w.Header().Set("Expires", "0")
-					w.Header().Set("X-Robots-Tag", "noindex, nofollow")
-					w.WriteHeader(http.StatusOK)
+				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+				w.Header().Set("Pragma", "no-cache")
+				w.Header().Set("Expires", "0")
+				w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+				w.WriteHeader(http.StatusOK)
 
-					retryTemplate(RetryPageParams{
-						HeadParams: HeadParams{},
-					}).Render(r.Context(), w)
-				}
+				retryTemplate(RetryPageParams{
+					HeadParams: HeadParams{},
+				}).Render(r.Context(), w)
+			} else {
+				tw.mu.Unlock()
 			}
 		}
 	}
